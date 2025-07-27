@@ -1,0 +1,117 @@
+name: Sync Release to S3
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  S3_BUCKET: vibemotion-release
+
+jobs:
+  sync-to-s3:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-southeast-2
+
+      - name: Download release assets
+        run: |
+          # Get release information
+          RELEASE_TAG="${{ github.event.release.tag_name }}"
+          RELEASE_ID="${{ github.event.release.id }}"
+          
+          echo "Release tag: $RELEASE_TAG"
+          echo "Release ID: $RELEASE_ID"
+          
+          # Create directory for assets
+          mkdir -p assets
+          
+          # Download all .exe files from the release
+          gh api repos/${{ github.repository }}/releases/$RELEASE_ID/assets \
+            --jq '.[] | select(.name | endswith(".exe")) | .browser_download_url' | \
+            while read url; do
+              filename=$(basename "$url")
+              echo "Downloading $filename..."
+              curl -L -o "assets/$filename" "$url"
+            done
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Upload to S3 with tag path
+        run: |
+          RELEASE_TAG="${{ github.event.release.tag_name }}"
+          
+          # Upload each .exe file to the tagged path
+          for file in assets/*.exe; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              s3_path="releases/tag/$RELEASE_TAG/$filename"
+              
+              echo "Uploading $filename to s3://$S3_BUCKET/$s3_path"
+              aws s3 cp "$file" "s3://$S3_BUCKET/$s3_path"
+            fi
+          done
+
+      - name: Update latest folder
+        run: |
+          RELEASE_TAG="${{ github.event.release.tag_name }}"
+          
+          # Check if this is a version tag (starts with v)
+          if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
+            echo "Valid version tag detected: $RELEASE_TAG"
+            
+            # Upload each .exe file to the latest path
+            for file in assets/*.exe; do
+              if [ -f "$file" ]; then
+                filename=$(basename "$file")
+                latest_path="latest/$filename"
+                
+                echo "Uploading $filename to s3://$S3_BUCKET/$latest_path"
+                aws s3 cp "$file" "s3://$S3_BUCKET/$latest_path"
+              fi
+            done
+          else
+            echo "Skipping latest upload - not a version tag"
+          fi
+
+      - name: Set S3 object metadata
+        run: |
+          RELEASE_TAG="${{ github.event.release.tag_name }}"
+          
+          # Set metadata for tagged files
+          for file in assets/*.exe; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              s3_path="release/tag/$RELEASE_TAG/$filename"
+              
+              aws s3api copy-object \
+                --bucket "$S3_BUCKET" \
+                --copy-source "$S3_BUCKET/$s3_path" \
+                --key "$s3_path" \
+                --metadata "release-tag=$RELEASE_TAG,uploaded-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                --metadata-directive REPLACE
+            fi
+          done
+          
+          # Set metadata for latest files if this is a version release
+          if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
+            for file in assets/*.exe; do
+              if [ -f "$file" ]; then
+                filename=$(basename "$file")
+                latest_path="latest/$filename"
+                
+                aws s3api copy-object \
+                  --bucket "$S3_BUCKET" \
+                  --copy-source "$S3_BUCKET/$latest_path" \
+                  --key "$latest_path" \
+                  --metadata "release-tag=$RELEASE_TAG,uploaded-at=$(date -u +%Y-%m-%dT%H:%M:%SZ),is-latest=true" \
+                  --metadata-directive REPLACE
+              fi
+            done
+          fi
