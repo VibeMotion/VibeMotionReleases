@@ -81,8 +81,12 @@ jobs:
                 filename=$(basename "$file")
                 s3_path="releases/tag/$RELEASE_TAG/$filename"
                 
-                echo "Uploading $filename to s3://$S3_BUCKET/$s3_path"
-                aws s3 cp "$file" "s3://$S3_BUCKET/$s3_path"
+                if ! aws s3 ls "s3://$S3_BUCKET/$s3_path" > /dev/null 2>&1; then
+                  echo "Uploading $filename to s3://$S3_BUCKET/$s3_path"
+                  aws s3 cp "$file" "s3://$S3_BUCKET/$s3_path"
+                else
+                  echo "File already exists, skipping: $s3_path"
+                fi
               fi
             done
           else
@@ -97,8 +101,12 @@ jobs:
                     filename=$(basename "$file")
                     s3_path="releases/tag/$tag_name/$filename"
                     
-                    echo "Uploading $filename to s3://$S3_BUCKET/$s3_path"
-                    aws s3 cp "$file" "s3://$S3_BUCKET/$s3_path"
+                    if ! aws s3 ls "s3://$S3_BUCKET/$s3_path" > /dev/null 2>&1; then
+                      echo "Uploading $filename to s3://$S3_BUCKET/$s3_path"
+                      aws s3 cp "$file" "s3://$S3_BUCKET/$s3_path"
+                    else
+                      echo "File already exists, skipping: $s3_path"
+                    fi
                   fi
                 done
               fi
