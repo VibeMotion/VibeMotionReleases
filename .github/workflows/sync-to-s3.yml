@@ -22,95 +22,217 @@ jobs:
 
       - name: Download release assets
         run: |
-          # Get release information
-          RELEASE_TAG="${{ github.event.release.tag_name }}"
-          RELEASE_ID="${{ github.event.release.id }}"
-          
-          echo "Release tag: $RELEASE_TAG"
-          echo "Release ID: $RELEASE_ID"
-          
           # Create directory for assets
           mkdir -p assets
           
-          # Download all .exe files from the release
-          gh api repos/${{ github.repository }}/releases/$RELEASE_ID/assets \
-            --jq '.[] | select(.name | endswith(".exe")) | .browser_download_url' | \
-            while read url; do
-              filename=$(basename "$url")
-              echo "Downloading $filename..."
-              curl -L -o "assets/$filename" "$url"
-            done
+          if [ "${{ github.event_name }}" = "release" ]; then
+            # Get release information from event
+            RELEASE_TAG="${{ github.event.release.tag_name }}"
+            RELEASE_ID="${{ github.event.release.id }}"
+            
+            echo "Processing single release: $RELEASE_TAG"
+            
+            # Download all .exe files from the release
+            gh api repos/${{ github.repository }}/releases/$RELEASE_ID/assets \
+              --jq '.[] | select(.name | endswith(".exe")) | .browser_download_url' | \
+              while read url; do
+                filename=$(basename "$url")
+                echo "Downloading $filename..."
+                curl -L -o "assets/$filename" "$url"
+              done
+          else
+            # Manual trigger - sync all releases
+            echo "Processing all releases..."
+            
+            # Get all releases and download their .exe assets
+            gh api repos/${{ github.repository }}/releases \
+              --jq '.[] | {tag_name, id}' | \
+              while read -r release; do
+                tag_name=$(echo "$release" | jq -r '.tag_name')
+                release_id=$(echo "$release" | jq -r '.id')
+                
+                echo "Processing release: $tag_name"
+                
+                # Create tag-specific directory
+                mkdir -p "assets/$tag_name"
+                
+                # Download .exe files for this release
+                gh api repos/${{ github.repository }}/releases/$release_id/assets \
+                  --jq '.[] | select(.name | endswith(".exe")) | .browser_download_url' | \
+                  while read url; do
+                    filename=$(basename "$url")
+                    echo "Downloading $filename for $tag_name..."
+                    curl -L -o "assets/$tag_name/$filename" "$url"
+                  done
+              done
+          fi
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
 
       - name: Upload to S3 with tag path
         run: |
-          RELEASE_TAG="${{ github.event.release.tag_name }}"
-          
-          # Upload each .exe file to the tagged path
-          for file in assets/*.exe; do
-            if [ -f "$file" ]; then
-              filename=$(basename "$file")
-              s3_path="releases/tag/$RELEASE_TAG/$filename"
-              
-              echo "Uploading $filename to s3://$S3_BUCKET/$s3_path"
-              aws s3 cp "$file" "s3://$S3_BUCKET/$s3_path"
-            fi
-          done
-
-      - name: Update latest folder
-        run: |
-          RELEASE_TAG="${{ github.event.release.tag_name }}"
-          
-          # Check if this is a version tag (starts with v)
-          if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
-            echo "Valid version tag detected: $RELEASE_TAG"
+          if [ "${{ github.event_name }}" = "release" ]; then
+            # Single release upload
+            RELEASE_TAG="${{ github.event.release.tag_name }}"
             
-            # Upload each .exe file to the latest path
+            # Upload each .exe file to the tagged path
             for file in assets/*.exe; do
               if [ -f "$file" ]; then
                 filename=$(basename "$file")
-                latest_path="latest/$filename"
+                s3_path="releases/tag/$RELEASE_TAG/$filename"
                 
-                echo "Uploading $filename to s3://$S3_BUCKET/$latest_path"
-                aws s3 cp "$file" "s3://$S3_BUCKET/$latest_path"
+                echo "Uploading $filename to s3://$S3_BUCKET/$s3_path"
+                aws s3 cp "$file" "s3://$S3_BUCKET/$s3_path"
               fi
             done
           else
-            echo "Skipping latest upload - not a version tag"
+            # Multiple releases upload
+            for tag_dir in assets/*/; do
+              if [ -d "$tag_dir" ]; then
+                tag_name=$(basename "$tag_dir")
+                echo "Uploading files for release: $tag_name"
+                
+                for file in "$tag_dir"*.exe; do
+                  if [ -f "$file" ]; then
+                    filename=$(basename "$file")
+                    s3_path="releases/tag/$tag_name/$filename"
+                    
+                    echo "Uploading $filename to s3://$S3_BUCKET/$s3_path"
+                    aws s3 cp "$file" "s3://$S3_BUCKET/$s3_path"
+                  fi
+                done
+              fi
+            done
+          fi
+
+      - name: Update latest folder
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            # Single release - update latest if version tag
+            RELEASE_TAG="${{ github.event.release.tag_name }}"
+            
+            # Check if this is a version tag (starts with v)
+            if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
+              echo "Valid version tag detected: $RELEASE_TAG"
+              
+              # Upload each .exe file to the latest path
+              for file in assets/*.exe; do
+                if [ -f "$file" ]; then
+                  filename=$(basename "$file")
+                  latest_path="latest/$filename"
+                  
+                  echo "Uploading $filename to s3://$S3_BUCKET/$latest_path"
+                  aws s3 cp "$file" "s3://$S3_BUCKET/$latest_path"
+                fi
+              done
+            else
+              echo "Skipping latest upload - not a version tag"
+            fi
+          else
+            # Multiple releases - find latest version and update latest folder
+            echo "Finding latest version release..."
+            
+            # Get all version tags, sort them, and get the latest
+            latest_tag=$(find assets -maxdepth 1 -type d -name "v*" | \
+              sed 's|assets/||' | \
+              sort -V | \
+              tail -n 1)
+            
+            if [ -n "$latest_tag" ] && [[ "$latest_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
+              echo "Latest version tag: $latest_tag"
+              
+              # Upload files from latest version to latest folder
+              for file in "assets/$latest_tag"/*.exe; do
+                if [ -f "$file" ]; then
+                  filename=$(basename "$file")
+                  latest_path="latest/$filename"
+                  
+                  echo "Uploading $filename to s3://$S3_BUCKET/$latest_path"
+                  aws s3 cp "$file" "s3://$S3_BUCKET/$latest_path"
+                fi
+              done
+            else
+              echo "No valid version tags found"
+            fi
           fi
 
       - name: Set S3 object metadata
         run: |
-          RELEASE_TAG="${{ github.event.release.tag_name }}"
-          
-          # Set metadata for tagged files
-          for file in assets/*.exe; do
-            if [ -f "$file" ]; then
-              filename=$(basename "$file")
-              s3_path="release/tag/$RELEASE_TAG/$filename"
-              
-              aws s3api copy-object \
-                --bucket "$S3_BUCKET" \
-                --copy-source "$S3_BUCKET/$s3_path" \
-                --key "$s3_path" \
-                --metadata "release-tag=$RELEASE_TAG,uploaded-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-                --metadata-directive REPLACE
-            fi
-          done
-          
-          # Set metadata for latest files if this is a version release
-          if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
+          if [ "${{ github.event_name }}" = "release" ]; then
+            # Single release metadata
+            RELEASE_TAG="${{ github.event.release.tag_name }}"
+            
+            # Set metadata for tagged files
             for file in assets/*.exe; do
               if [ -f "$file" ]; then
                 filename=$(basename "$file")
+                s3_path="releases/tag/$RELEASE_TAG/$filename"
+                
+                aws s3api copy-object \
+                  --bucket "$S3_BUCKET" \
+                  --copy-source "$S3_BUCKET/$s3_path" \
+                  --key "$s3_path" \
+                  --metadata "release-tag=$RELEASE_TAG,uploaded-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                  --metadata-directive REPLACE
+              fi
+            done
+            
+            # Set metadata for latest files if this is a version release
+            if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
+              for file in assets/*.exe; do
+                if [ -f "$file" ]; then
+                  filename=$(basename "$file")
+                  latest_path="latest/$filename"
+                  
+                  aws s3api copy-object \
+                    --bucket "$S3_BUCKET" \
+                    --copy-source "$S3_BUCKET/$latest_path" \
+                    --key "$latest_path" \
+                    --metadata "release-tag=$RELEASE_TAG,uploaded-at=$(date -u +%Y-%m-%dT%H:%M:%SZ),is-latest=true" \
+                    --metadata-directive REPLACE
+                fi
+              done
+            fi
+          else
+            # Multiple releases metadata
+            for tag_dir in assets/*/; do
+              if [ -d "$tag_dir" ]; then
+                tag_name=$(basename "$tag_dir")
+                echo "Setting metadata for release: $tag_name"
+                
+                for file in "$tag_dir"*.exe; do
+                  if [ -f "$file" ]; then
+                    filename=$(basename "$file")
+                    s3_path="releases/tag/$tag_name/$filename"
+                    
+                    aws s3api copy-object \
+                      --bucket "$S3_BUCKET" \
+                      --copy-source "$S3_BUCKET/$s3_path" \
+                      --key "$s3_path" \
+                      --metadata "release-tag=$tag_name,uploaded-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                      --metadata-directive REPLACE
+                  fi
+                done
+              fi
+            done
+            
+            # Set metadata for latest files
+            for file in latest/*.exe; do
+              if aws s3 ls "s3://$S3_BUCKET/$file" > /dev/null 2>&1; then
+                filename=$(basename "$file")
                 latest_path="latest/$filename"
+                
+                # Get the tag from the latest folder determination
+                latest_tag=$(find assets -maxdepth 1 -type d -name "v*" | \
+                  sed 's|assets/||' | \
+                  sort -V | \
+                  tail -n 1)
                 
                 aws s3api copy-object \
                   --bucket "$S3_BUCKET" \
                   --copy-source "$S3_BUCKET/$latest_path" \
                   --key "$latest_path" \
-                  --metadata "release-tag=$RELEASE_TAG,uploaded-at=$(date -u +%Y-%m-%dT%H:%M:%SZ),is-latest=true" \
+                  --metadata "release-tag=$latest_tag,uploaded-at=$(date -u +%Y-%m-%dT%H:%M:%SZ),is-latest=true" \
                   --metadata-directive REPLACE
               fi
             done
