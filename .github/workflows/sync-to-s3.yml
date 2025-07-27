@@ -115,13 +115,12 @@ jobs:
             if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
               echo "Valid version tag detected: $RELEASE_TAG"
               
-              # Upload each .exe file to the latest path
+              # Upload each .exe file to the latest path with renamed filename
               for file in assets/*.exe; do
                 if [ -f "$file" ]; then
-                  filename=$(basename "$file")
-                  latest_path="latest/$filename"
+                  latest_path="releases/tag/latest/VibeMotion_Setup_Latest.exe"
                   
-                  echo "Uploading $filename to s3://$S3_BUCKET/$latest_path"
+                  echo "Uploading $(basename "$file") as VibeMotion_Setup_Latest.exe to s3://$S3_BUCKET/$latest_path"
                   aws s3 cp "$file" "s3://$S3_BUCKET/$latest_path"
                 fi
               done
@@ -141,13 +140,12 @@ jobs:
             if [ -n "$latest_tag" ] && [[ "$latest_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
               echo "Latest version tag: $latest_tag"
               
-              # Upload files from latest version to latest folder
+              # Upload files from latest version to latest folder with renamed filename
               for file in "assets/$latest_tag"/*.exe; do
                 if [ -f "$file" ]; then
-                  filename=$(basename "$file")
-                  latest_path="latest/$filename"
+                  latest_path="releases/tag/latest/VibeMotion_Setup_Latest.exe"
                   
-                  echo "Uploading $filename to s3://$S3_BUCKET/$latest_path"
+                  echo "Uploading $(basename "$file") as VibeMotion_Setup_Latest.exe to s3://$S3_BUCKET/$latest_path"
                   aws s3 cp "$file" "s3://$S3_BUCKET/$latest_path"
                 fi
               done
@@ -179,19 +177,14 @@ jobs:
             
             # Set metadata for latest files if this is a version release
             if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
-              for file in assets/*.exe; do
-                if [ -f "$file" ]; then
-                  filename=$(basename "$file")
-                  latest_path="latest/$filename"
-                  
-                  aws s3api copy-object \
-                    --bucket "$S3_BUCKET" \
-                    --copy-source "$S3_BUCKET/$latest_path" \
-                    --key "$latest_path" \
-                    --metadata "release-tag=$RELEASE_TAG,uploaded-at=$(date -u +%Y-%m-%dT%H:%M:%SZ),is-latest=true" \
-                    --metadata-directive REPLACE
-                fi
-              done
+              latest_path="releases/tag/latest/VibeMotion_Setup_Latest.exe"
+              
+              aws s3api copy-object \
+                --bucket "$S3_BUCKET" \
+                --copy-source "$S3_BUCKET/$latest_path" \
+                --key "$latest_path" \
+                --metadata "release-tag=$RELEASE_TAG,uploaded-at=$(date -u +%Y-%m-%dT%H:%M:%SZ),is-latest=true" \
+                --metadata-directive REPLACE
             fi
           else
             # Multiple releases metadata
@@ -216,24 +209,20 @@ jobs:
               fi
             done
             
-            # Set metadata for latest files
-            for file in latest/*.exe; do
-              if aws s3 ls "s3://$S3_BUCKET/$file" > /dev/null 2>&1; then
-                filename=$(basename "$file")
-                latest_path="latest/$filename"
-                
-                # Get the tag from the latest folder determination
-                latest_tag=$(find assets -maxdepth 1 -type d -name "v*" | \
-                  sed 's|assets/||' | \
-                  sort -V | \
-                  tail -n 1)
-                
-                aws s3api copy-object \
-                  --bucket "$S3_BUCKET" \
-                  --copy-source "$S3_BUCKET/$latest_path" \
-                  --key "$latest_path" \
-                  --metadata "release-tag=$latest_tag,uploaded-at=$(date -u +%Y-%m-%dT%H:%M:%SZ),is-latest=true" \
-                  --metadata-directive REPLACE
-              fi
-            done
+            # Set metadata for latest file
+            latest_path="releases/tag/latest/VibeMotion_Setup_Latest.exe"
+            if aws s3 ls "s3://$S3_BUCKET/$latest_path" > /dev/null 2>&1; then
+              # Get the tag from the latest folder determination
+              latest_tag=$(find assets -maxdepth 1 -type d -name "v*" | \
+                sed 's|assets/||' | \
+                sort -V | \
+                tail -n 1)
+              
+              aws s3api copy-object \
+                --bucket "$S3_BUCKET" \
+                --copy-source "$S3_BUCKET/$latest_path" \
+                --key "$latest_path" \
+                --metadata "release-tag=$latest_tag,uploaded-at=$(date -u +%Y-%m-%dT%H:%M:%SZ),is-latest=true" \
+                --metadata-directive REPLACE
+            fi
           fi
