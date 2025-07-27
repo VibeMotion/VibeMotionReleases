@@ -41,7 +41,7 @@ jobs:
               curl -L -o "assets/$filename" "$url"
             done
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
 
       - name: Upload to S3 with tag path
         run: |
